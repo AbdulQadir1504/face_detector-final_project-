@@ -1,31 +1,30 @@
 """
-Face detection and encoding utilities
-Optimized for Streamlit Cloud deployment with face_recognition library
+Face detection and encoding utilities using DeepFace
+Optimized for Streamlit Cloud deployment with TensorFlow backend
 """
 
 import cv2
 import numpy as np
-import face_recognition
 from pathlib import Path
 import pickle
-import os
+import time
+from deepface import DeepFace
 from config import (
     KNOWN_FACES_DIR,
-    FACE_DETECTION_MODEL,
     UNKNOWN_FACE_THRESHOLD,
-    UPSAMPLE_TIMES,
     MAX_FACES_PER_FRAME,
     ENCODING_CACHE_DURATION
 )
-import time
 
 class FaceDetector:
-    """Handles face detection in images"""
+    """Handles face detection in images using OpenCV"""
     
     def __init__(self):
-        self.model = FACE_DETECTION_MODEL
-        self.upsample_times = UPSAMPLE_TIMES
-        print(f"✓ Face detector initialized (model: {self.model})")
+        # Use OpenCV's built-in face detector (lighter than DeepFace for detection)
+        self.face_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+        )
+        print("✓ Face detector initialized (OpenCV Haar Cascade)")
     
     def detect_faces(self, image):
         """
@@ -37,15 +36,25 @@ class FaceDetector:
         Returns:
             List of face locations as (top, right, bottom, left)
         """
-        # Convert BGR to RGB (face_recognition uses RGB)
-        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        # Convert to grayscale for detection
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         
         # Detect faces
-        face_locations = face_recognition.face_locations(
-            rgb_image,
-            number_of_times_to_upsample=self.upsample_times,
-            model=self.model
+        faces = self.face_cascade.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(30, 30)
         )
+        
+        # Convert OpenCV format (x, y, w, h) to face_recognition format (top, right, bottom, left)
+        face_locations = []
+        for (x, y, w, h) in faces:
+            top = y
+            right = x + w
+            bottom = y + h
+            left = x
+            face_locations.append((top, right, bottom, left))
         
         # Limit number of faces
         if len(face_locations) > MAX_FACES_PER_FRAME:
@@ -55,43 +64,55 @@ class FaceDetector:
     
     def get_face_encodings(self, image, face_locations):
         """
-        Get face encodings for detected faces
+        Get face encodings for detected faces using DeepFace
         
         Args:
             image: BGR image from OpenCV
             face_locations: List of face locations
             
         Returns:
-            List of face encodings
+            List of face encodings (embeddings)
         """
         if not face_locations:
             return []
         
-        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        encodings = []
         
-        encodings = face_recognition.face_encodings(
-            rgb_image,
-            face_locations,
-            num_jitters=1  # Reduce jitters for better performance
-        )
+        for (top, right, bottom, left) in face_locations:
+            try:
+                # Extract face ROI
+                face_roi = image[top:bottom, left:right]
+                
+                if face_roi.size == 0:
+                    encodings.append(None)
+                    continue
+                
+                # Convert BGR to RGB
+                face_roi_rgb = cv2.cvtColor(face_roi, cv2.COLOR_BGR2RGB)
+                
+                # Get embedding using DeepFace
+                # Using VGG-Face model (good balance of accuracy and speed)
+                embedding = DeepFace.represent(
+                    img_path=face_roi_rgb,
+                    model_name='VGG-Face',
+                    enforce_detection=False,
+                    detector_backend='skip'  # Skip detection since we already have face location
+                )
+                
+                if embedding and len(embedding) > 0:
+                    encodings.append(np.array(embedding[0]['embedding']))
+                else:
+                    encodings.append(None)
+                    
+            except Exception as e:
+                print(f"⚠ Error getting face encoding: {str(e)}")
+                encodings.append(None)
         
         return encodings
     
     def draw_box_and_label(self, image, face_location, name, distance, is_known, color, show_distance=True):
         """
         Draw bounding box and label on image
-        
-        Args:
-            image: Image to draw on
-            face_location: (top, right, bottom, left)
-            name: Person name
-            distance: Recognition distance
-            is_known: Boolean indicating if person is known
-            color: Box color (BGR)
-            show_distance: Whether to show confidence score
-            
-        Returns:
-            Image with drawings
         """
         top, right, bottom, left = face_location
         
@@ -100,7 +121,8 @@ class FaceDetector:
         
         # Prepare label
         if show_distance:
-            label = f"{name} ({distance:.2f})" if is_known else f"UNKNOWN ({distance:.2f})"
+            confidence = 1 - min(distance, 1.0)  # Convert distance to confidence
+            label = f"{name} ({confidence:.0%})" if is_known else f"UNKNOWN ({confidence:.0%})"
         else:
             label = name if is_known else "UNKNOWN"
         
@@ -129,7 +151,7 @@ class FaceDetector:
 
 
 class FaceEncoder:
-    """Handles face encoding and recognition"""
+    """Handles face encoding and recognition using DeepFace"""
     
     def __init__(self):
         self.known_face_encodings = []
@@ -140,12 +162,6 @@ class FaceEncoder:
     def load_known_faces(self, force_reload=False):
         """
         Load known faces from directory and generate encodings
-        
-        Args:
-            force_reload: Force reload even if cache exists
-            
-        Returns:
-            Boolean indicating success
         """
         # Check cache first
         if not force_reload and self.cache_file.exists():
@@ -167,7 +183,7 @@ class FaceEncoder:
         images_processed = 0
         
         for person_dir in KNOWN_FACES_DIR.iterdir():
-            if not person_dir.is_dir():
+            if not person_dir.is_dir() or person_dir.name == "README.txt":
                 continue
             
             person_name = person_dir.name
@@ -175,34 +191,24 @@ class FaceEncoder:
             
             # Process images for this person
             for image_path in person_dir.glob("*"):
-                if image_path.suffix.lower() not in ['.jpg', '.jpeg', '.png', '.bmp', '.gif']:
+                if image_path.suffix.lower() not in ['.jpg', '.jpeg', '.png', '.bmp']:
                     continue
                 
                 try:
-                    # Load image
-                    image = cv2.imread(str(image_path))
-                    if image is None:
-                        continue
+                    # Get embedding using DeepFace
+                    embedding = DeepFace.represent(
+                        img_path=str(image_path),
+                        model_name='VGG-Face',
+                        enforce_detection=False
+                    )
                     
-                    # Convert to RGB
-                    rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                    
-                    # Detect face
-                    face_locations = face_recognition.face_locations(rgb_image)
-                    
-                    if not face_locations:
-                        print(f"⚠ No face found in {image_path.name} for {person_name}")
-                        continue
-                    
-                    # Get encoding for first face
-                    encodings = face_recognition.face_encodings(rgb_image, face_locations)
-                    
-                    if encodings:
-                        person_encodings.append(encodings[0])
+                    if embedding and len(embedding) > 0:
+                        person_encodings.append(np.array(embedding[0]['embedding']))
                         images_processed += 1
+                        print(f"✓ Processed {image_path.name} for {person_name}")
                     
                 except Exception as e:
-                    print(f"✗ Error processing {image_path}: {str(e)}")
+                    print(f"⚠ Error processing {image_path.name}: {str(e)}")
             
             # Average encodings for this person
             if person_encodings:
@@ -250,14 +256,7 @@ class FaceEncoder:
     
     def recognize_face(self, face_encoding, threshold=None):
         """
-        Recognize a face by comparing with known encodings
-        
-        Args:
-            face_encoding: Encoding of face to recognize
-            threshold: Recognition threshold (default from config)
-            
-        Returns:
-            Tuple of (name, distance, is_known)
+        Recognize a face by comparing with known encodings using cosine similarity
         """
         if threshold is None:
             threshold = UNKNOWN_FACE_THRESHOLD
@@ -265,21 +264,27 @@ class FaceEncoder:
         if not self.known_face_encodings or face_encoding is None:
             return "Unknown", 1.0, False
         
-        # Calculate distances
-        distances = face_recognition.face_distance(self.known_face_encodings, face_encoding)
+        # Calculate cosine similarity (higher = more similar)
+        similarities = []
+        for known_encoding in self.known_face_encodings:
+            # Cosine similarity
+            similarity = np.dot(face_encoding, known_encoding) / (
+                np.linalg.norm(face_encoding) * np.linalg.norm(known_encoding)
+            )
+            similarities.append(similarity)
         
-        if len(distances) == 0:
-            return "Unknown", 1.0, False
+        similarities = np.array(similarities)
+        best_match_index = np.argmax(similarities)
+        best_similarity = similarities[best_match_index]
         
-        # Find best match
-        best_match_index = np.argmin(distances)
-        best_distance = distances[best_match_index]
+        # Convert similarity to distance (1 - similarity)
+        distance = 1 - best_similarity
         
-        # Check if match is below threshold
-        if best_distance <= threshold:
-            return self.known_face_names[best_match_index], best_distance, True
+        # Check if match is above threshold (using similarity directly)
+        if best_similarity >= threshold:
+            return self.known_face_names[best_match_index], distance, True
         else:
-            return "Unknown", best_distance, False
+            return "Unknown", distance, False
     
     def get_statistics(self):
         """Get statistics about known faces"""
@@ -310,7 +315,7 @@ To add known faces for recognition:
    known_faces/Person_Name/photo1.jpg
    known_faces/Person_Name/photo2.jpg
 
-3. Supported formats: JPG, JPEG, PNG, BMP, GIF
+3. Supported formats: JPG, JPEG, PNG, BMP
 
 Tips for better recognition:
 - Use clear, front-facing photos
