@@ -92,3 +92,90 @@ def ensure_directories():
 
 # Run directory check
 ensure_directories()
+"""
+Configuration settings for AI Security System
+Optimized for Streamlit Cloud deployment with DeepFace
+"""
+
+import os
+from pathlib import Path
+
+# ==================== PATH CONFIGURATION ====================
+BASE_DIR = Path(__file__).parent
+KNOWN_FACES_DIR = BASE_DIR / "known_faces"
+ALERT_LOG_FILE = BASE_DIR / "security_alerts.log"
+
+# ==================== FACE DETECTION SETTINGS ====================
+# Face detection method: 'opencv' (faster) or 'deepface' (more accurate)
+# For cloud deployment, 'opencv' is recommended
+FACE_DETECTION_METHOD = "opencv"
+
+# Face recognition threshold for DeepFace (cosine similarity)
+# 🔴 CHANGE THIS: Higher = stricter matching, Lower = more permissive
+# Range: 0.3 to 0.7 (0.5 is good default for DeepFace)
+UNKNOWN_FACE_THRESHOLD = 0.5  # ← UPDATED from 0.6 to 0.5 for DeepFace
+
+# Number of times to upsample the image for better detection
+# Higher = better for small faces, but slower
+UPSAMPLE_TIMES = 1
+
+# ==================== DISPLAY SETTINGS ====================
+# Colors (BGR format for OpenCV)
+KNOWN_PERSON_COLOR = (0, 255, 0)      # Green for known persons
+UNKNOWN_PERSON_COLOR = (0, 0, 255)    # Red for unknown persons
+TEXT_COLOR = (255, 255, 255)           # White text
+
+# Font settings
+FONT_SIZE = 0.6
+FONT_THICKNESS = 2
+BOX_THICKNESS = 2
+
+# ==================== ALERT SETTINGS ====================
+# Minimum time between alerts for the same unknown person (seconds)
+ALERT_TRIGGER_COOLDOWN = 5
+
+# Maximum number of alerts to keep in memory
+MAX_ALERT_HISTORY = 100
+
+# ==================== PERFORMANCE SETTINGS ====================
+# Maximum number of faces to detect per frame
+MAX_FACES_PER_FRAME = 5
+
+# Image quality for encoding (1-100)
+ENCODING_QUALITY = 90
+
+# ==================== STREAMLIT SPECIFIC ====================
+# Maximum image size for processing (width, height)
+MAX_IMAGE_WIDTH = 1280
+MAX_IMAGE_HEIGHT = 720
+
+# Cache duration for face encodings (seconds)
+ENCODING_CACHE_DURATION = 3600
+
+# ==================== LOGGING SETTINGS ====================
+LOG_FORMAT = "[%(asctime)s] %(levelname)s: %(message)s"
+LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+# ==================== DEEPFACE SPECIFIC SETTINGS ====================
+# Model to use for face recognition
+# Options: 'VGG-Face', 'Facenet', 'OpenFace', 'DeepFace', 'ArcFace'
+DEEPFACE_MODEL = 'VGG-Face'  # VGG-Face is best balance of speed and accuracy
+
+# Backend for DeepFace
+# Options: 'opencv', 'ssd', 'dlib', 'mtcnn', 'retinaface'
+DEEPFACE_BACKEND = 'opencv'  # 'opencv' is fastest for cloud deployment
+
+# ==================== INITIALIZATION ====================
+def ensure_directories():
+    """Ensure all required directories exist"""
+    KNOWN_FACES_DIR.mkdir(exist_ok=True)
+    
+    # Create a sample person directory if none exists
+    if not any(KNOWN_FACES_DIR.iterdir()):
+        sample_dir = KNOWN_FACES_DIR / "Sample_Person"
+        sample_dir.mkdir(exist_ok=True)
+        print("📁 Created sample directory: known_faces/Sample_Person/")
+        print("   Add face images there for recognition")
+
+# Run directory check
+ensure_directories()
